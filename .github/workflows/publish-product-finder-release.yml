@@ -1,0 +1,74 @@
+name: Publish Product Finder Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish, e.g. 0.0.2"
+        required: true
+        type: string
+  push:
+    paths:
+      - 'all-star-product-finder-*.zip'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 2
+
+      - name: Resolve package and version
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ inputs.version }}"
+            ZIP="all-star-product-finder-${VERSION}.zip"
+          else
+            ZIP="$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" | grep -E '^all-star-product-finder-[0-9].*\.zip$' | tail -1 || true)"
+            if [[ -z "$ZIP" ]]; then
+              ZIP="$(find . -maxdepth 1 -type f -name 'all-star-product-finder-*.zip' -printf '%f\n' | sort -V | tail -1)"
+            fi
+            VERSION="${ZIP#all-star-product-finder-}"
+            VERSION="${VERSION%.zip}"
+          fi
+          test -f "$ZIP"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Validate WordPress plugin ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -t "${{ steps.pkg.outputs.zip }}" >/dev/null
+          unzip -l "${{ steps.pkg.outputs.zip }}" | grep -q 'all-star-product-finder/all-star-product-finder.php'
+
+          TMP="$(mktemp -d)"
+          unzip -q "${{ steps.pkg.outputs.zip }}" -d "$TMP"
+          grep -Eq '^ \* Version: ${{ steps.pkg.outputs.version }}$' "$TMP/all-star-product-finder/all-star-product-finder.php"
+          grep -Eq "define\( 'ASEPF_VERSION', '${{ steps.pkg.outputs.version }}' \);" "$TMP/all-star-product-finder/all-star-product-finder.php"
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="v${{ steps.pkg.outputs.version }}"
+          ZIP="${{ steps.pkg.outputs.zip }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP" --clobber
+          else
+            gh release create "$TAG" "$ZIP" \
+              --target "$GITHUB_SHA" \
+              --title "All Star Product Finder $TAG" \
+              --generate-notes
+          fi
