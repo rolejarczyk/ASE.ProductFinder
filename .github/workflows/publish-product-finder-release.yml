@@ -10,6 +10,7 @@ on:
   push:
     paths:
       - 'all-star-product-finder-*.zip'
+      - 'release-payload/**'
 
 permissions:
   contents: write
@@ -28,19 +29,42 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             VERSION="${{ inputs.version }}"
-            ZIP="all-star-product-finder-${VERSION}.zip"
           else
-            ZIP="$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" | grep -E '^all-star-product-finder-[0-9].*\.zip$' | tail -1 || true)"
-            if [[ -z "$ZIP" ]]; then
-              ZIP="$(find . -maxdepth 1 -type f -name 'all-star-product-finder-*.zip' -printf '%f\n' | sort -V | tail -1)"
+            CHANGED="$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")"
+            ZIP_CHANGED="$(printf '%s\n' "$CHANGED" | grep -E '^all-star-product-finder-[0-9].*\.zip$' | tail -1 || true)"
+            PAYLOAD_CHANGED="$(printf '%s\n' "$CHANGED" | grep -E '^release-payload/[0-9]+\.[0-9]+\.[0-9]+([^/]*)/part-[0-9]+\.b64$' | tail -1 || true)"
+
+            if [[ -n "$ZIP_CHANGED" ]]; then
+              VERSION="${ZIP_CHANGED#all-star-product-finder-}"
+              VERSION="${VERSION%.zip}"
+            elif [[ -n "$PAYLOAD_CHANGED" ]]; then
+              VERSION="${PAYLOAD_CHANGED#release-payload/}"
+              VERSION="${VERSION%%/*}"
+            else
+              echo "No Product Finder release package was found in this commit." >&2
+              exit 1
             fi
-            VERSION="${ZIP#all-star-product-finder-}"
-            VERSION="${VERSION%.zip}"
           fi
-          test -f "$ZIP"
+
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]
+          ZIP="all-star-product-finder-${VERSION}.zip"
+
+          if [[ ! -f "$ZIP" ]]; then
+            PAYLOAD_DIR="release-payload/${VERSION}"
+            mapfile -t PARTS < <(find "$PAYLOAD_DIR" -maxdepth 1 -type f -name 'part-*.b64' -printf '%p\n' 2>/dev/null | sort -V)
+            if (( ${#PARTS[@]} == 0 )); then
+              echo "Neither $ZIP nor a payload for version $VERSION exists." >&2
+              exit 1
+            fi
+
+            echo "Reconstructing $ZIP from ${#PARTS[@]} payload parts..."
+            cat "${PARTS[@]}" | base64 --decode > "$ZIP"
+          fi
+
+          test -s "$ZIP"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
 
@@ -48,13 +72,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          unzip -t "${{ steps.pkg.outputs.zip }}" >/dev/null
-          unzip -l "${{ steps.pkg.outputs.zip }}" | grep -q 'all-star-product-finder/all-star-product-finder.php'
+          ZIP="${{ steps.pkg.outputs.zip }}"
+          VERSION="${{ steps.pkg.outputs.version }}"
+
+          unzip -t "$ZIP" >/dev/null
+          unzip -l "$ZIP" | grep -q 'all-star-product-finder/all-star-product-finder.php'
 
           TMP="$(mktemp -d)"
-          unzip -q "${{ steps.pkg.outputs.zip }}" -d "$TMP"
-          grep -Eq '^ \* Version: ${{ steps.pkg.outputs.version }}$' "$TMP/all-star-product-finder/all-star-product-finder.php"
-          grep -Eq "define\( 'ASEPF_VERSION', '${{ steps.pkg.outputs.version }}' \);" "$TMP/all-star-product-finder/all-star-product-finder.php"
+          trap 'rm -rf "$TMP"' EXIT
+          unzip -q "$ZIP" -d "$TMP"
+          grep -Eq "^ \* Version: ${VERSION}$" "$TMP/all-star-product-finder/all-star-product-finder.php"
+          grep -Fq "define( 'ASEPF_VERSION', '${VERSION}' );" "$TMP/all-star-product-finder/all-star-product-finder.php"
 
       - name: Create or update GitHub Release
         env:
@@ -64,6 +92,7 @@ jobs:
           set -euo pipefail
           TAG="v${{ steps.pkg.outputs.version }}"
           ZIP="${{ steps.pkg.outputs.zip }}"
+
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$ZIP" --clobber
           else
