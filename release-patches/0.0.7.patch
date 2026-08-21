@@ -1,0 +1,108 @@
+# base: 0.0.6
+diff -ruN base/all-star-product-finder/README.txt next/all-star-product-finder/README.txt
+--- base/all-star-product-finder/README.txt	2026-08-19 04:07:54.000000000 +0000
++++ next/all-star-product-finder/README.txt	2026-08-21 04:25:47.766324422 +0000
+@@ -3,11 +3,11 @@
+ Tags: woocommerce, product finder, guided shopping, popup, recommendations
+ Requires at least: 6.4
+ Requires PHP: 8.0
+-Stable tag: 0.0.6
++Stable tag: 0.0.7
+ 
+ A full-screen guided shopping experience for All Star Embroidery.
+ 
+-== What v0.0.6 includes ==
++== What v0.0.7 includes ==
+ 
+ * Fixed the frontend initialization order so the finder modal is rendered before its footer JavaScript initializes. This restores automatic popups and manual launcher buttons.
+ * Finder header now automatically uses the WordPress website logo by default, with an optional Product Finder-specific override in Design settings.
+@@ -71,7 +71,7 @@
+ == Installation ==
+ 
+ 1. In WordPress, go to Plugins > Add New > Upload Plugin.
+-2. Upload all-star-product-finder-0.0.6.zip.
++2. Upload all-star-product-finder-0.0.7.zip.
+ 3. Activate “All Star Product Finder.”
+ 4. Open Product Finder in the WordPress admin sidebar.
+ 5. Start with Questions and upload your category / answer images.
+diff -ruN base/all-star-product-finder/all-star-product-finder.php next/all-star-product-finder/all-star-product-finder.php
+--- base/all-star-product-finder/all-star-product-finder.php	2026-08-19 04:01:15.000000000 +0000
++++ next/all-star-product-finder/all-star-product-finder.php	2026-08-21 04:25:47.766180408 +0000
+@@ -2,7 +2,7 @@
+ /**
+  * Plugin Name: All Star Product Finder
+  * Description: A customizable, full-screen guided product finder for All Star Embroidery and WooCommerce.
+- * Version: 0.0.6
++ * Version: 0.0.7
+  * Author: All Star Embroidery
+  * Requires at least: 6.4
+  * Requires PHP: 8.0
+@@ -14,7 +14,7 @@
+     exit;
+ }
+ 
+-define( 'ASEPF_VERSION', '0.0.6' );
++define( 'ASEPF_VERSION', '0.0.7' );
+ define( 'ASEPF_FILE', __FILE__ );
+ define( 'ASEPF_DIR', plugin_dir_path( __FILE__ ) );
+ define( 'ASEPF_URL', plugin_dir_url( __FILE__ ) );
+diff -ruN base/all-star-product-finder/assets/admin.js next/all-star-product-finder/assets/admin.js
+--- base/all-star-product-finder/assets/admin.js	2026-08-19 04:01:15.000000000 +0000
++++ next/all-star-product-finder/assets/admin.js	2026-08-21 04:25:47.766745068 +0000
+@@ -256,6 +256,7 @@
+         try {
+             localStorage.removeItem('asepf_seen');
+             localStorage.removeItem('asepf_seen_at');
++            localStorage.removeItem('asepf_dismissed_date');
+             sessionStorage.removeItem('asepf_seen');
+             $message.text('Popup history was cleared for this browser. The next normal eligible visit will be treated as new.');
+         } catch (err) {
+diff -ruN base/all-star-product-finder/assets/frontend.js next/all-star-product-finder/assets/frontend.js
+--- base/all-star-product-finder/assets/frontend.js	2026-08-19 04:10:00.000000000 +0000
++++ next/all-star-product-finder/assets/frontend.js	2026-08-21 04:25:47.766558631 +0000
+@@ -218,10 +218,35 @@
+             renderQuestion(instant ? 'instant' : 'back');
+         }
+ 
++        function localDateKey() {
++            var now = new Date();
++            var year = now.getFullYear();
++            var month = String(now.getMonth() + 1).padStart(2, '0');
++            var day = String(now.getDate()).padStart(2, '0');
++            return year + '-' + month + '-' + day;
++        }
++
++        function dismissedToday() {
++            try {
++                return localStorage.getItem('asepf_dismissed_date') === localDateKey();
++            } catch (e) {
++                return false;
++            }
++        }
++
++        function markDismissedToday() {
++            try {
++                localStorage.setItem('asepf_dismissed_date', localDateKey());
++            } catch (e) {}
++        }
++
+         function frequencyAllows() {
+             if (cfg.forceOpen) return true;
+             var g = cfg.general || {};
+             try {
++                // A visitor who explicitly closes the finder should not be interrupted
++                // by another automatic popup until their next local calendar day.
++                if (dismissedToday()) return false;
+                 if (g.frequency === 'always') return true;
+                 if (g.frequency === 'session') return sessionStorage.getItem('asepf_seen') !== '1';
+                 if (g.frequency === 'days') {
+@@ -281,6 +306,9 @@
+ 
+         function closeFinder() {
+             if (!overlay.classList.contains('is-open')) return;
++            // Explicit dismissal suppresses automatic reopening for the rest of today.
++            // Manual buttons and admin preview/test modes can still open the finder.
++            markDismissedToday();
+             window.clearTimeout(closeTimer);
+             overlay.classList.remove('is-open');
+ 
