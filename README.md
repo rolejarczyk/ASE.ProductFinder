@@ -1,13 +1,7 @@
-# All Star Product Finder
+# All Star Product Finder Releases
 
-Release repository for the **All Star Product Finder** WordPress/WooCommerce plugin used by All Star Embroidery.
+Public release repository for the All Star Product Finder WordPress/WooCommerce plugin.
 
-## Release workflow
+Current updater line: v0.0.7
 
-Future plugin ZIPs use the filename pattern:
-
-`all-star-product-finder-X.Y.Z.zip`
-
-When a new version ZIP is committed to the repository, GitHub Actions validates the WordPress plugin package and automatically creates or updates the matching GitHub Release (`vX.Y.Z`). WordPress then checks the latest public GitHub Release for plugin updates.
-
-Current initial release: **v0.0.2**.
+The GitHub Actions release workflow supports ZIP payload releases and patch-based releases built from a prior validated Product Finder package. WordPress installations can check the latest GitHub Release from the Product Finder admin updater screen.
