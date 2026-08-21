@@ -4,13 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish, e.g. 0.0.2"
+        description: "Version to publish, e.g. 0.0.7"
         required: true
         type: string
   push:
+    branches:
+      - main
     paths:
       - 'all-star-product-finder-*.zip'
       - 'release-payload/**'
+      - 'release-patches/**'
 
 permissions:
   contents: write
@@ -30,12 +33,17 @@ jobs:
         run: |
           set -euo pipefail
 
+          PATCH_FILE=""
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             VERSION="${{ inputs.version }}"
+            if [[ -f "release-patches/${VERSION}.patch" ]]; then
+              PATCH_FILE="release-patches/${VERSION}.patch"
+            fi
           else
             CHANGED="$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA")"
             ZIP_CHANGED="$(printf '%s\n' "$CHANGED" | grep -E '^all-star-product-finder-[0-9].*\.zip$' | tail -1 || true)"
             PAYLOAD_CHANGED="$(printf '%s\n' "$CHANGED" | grep -E '^release-payload/[0-9]+\.[0-9]+\.[0-9]+([^/]*)/part-[0-9]+\.(b64|bin)$' | tail -1 || true)"
+            PATCH_CHANGED="$(printf '%s\n' "$CHANGED" | grep -E '^release-patches/[0-9]+\.[0-9]+\.[0-9]+([^/]*)\.patch$' | tail -1 || true)"
 
             if [[ -n "$ZIP_CHANGED" ]]; then
               VERSION="${ZIP_CHANGED#all-star-product-finder-}"
@@ -43,8 +51,12 @@ jobs:
             elif [[ -n "$PAYLOAD_CHANGED" ]]; then
               VERSION="${PAYLOAD_CHANGED#release-payload/}"
               VERSION="${VERSION%%/*}"
+            elif [[ -n "$PATCH_CHANGED" ]]; then
+              PATCH_FILE="$PATCH_CHANGED"
+              VERSION="${PATCH_CHANGED#release-patches/}"
+              VERSION="${VERSION%.patch}"
             else
-              echo "No Product Finder release package was found in this commit." >&2
+              echo "No Product Finder release package or patch was found in this commit." >&2
               exit 1
             fi
           fi
@@ -52,19 +64,46 @@ jobs:
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]
           ZIP="all-star-product-finder-${VERSION}.zip"
 
+          reconstruct_payload() {
+            local source_version="$1"
+            local output_zip="$2"
+            local payload_dir="release-payload/${source_version}"
+            mapfile -t bin_parts < <(find "$payload_dir" -maxdepth 1 -type f -name 'part-*.bin' -printf '%p\n' 2>/dev/null | sort -V)
+            mapfile -t b64_parts < <(find "$payload_dir" -maxdepth 1 -type f -name 'part-*.b64' -printf '%p\n' 2>/dev/null | sort -V)
+
+            if (( ${#bin_parts[@]} > 0 )); then
+              cat "${bin_parts[@]}" > "$output_zip"
+            elif (( ${#b64_parts[@]} > 0 )); then
+              cat "${b64_parts[@]}" | base64 --decode > "$output_zip"
+            else
+              echo "No payload found for base version $source_version." >&2
+              exit 1
+            fi
+          }
+
           if [[ ! -f "$ZIP" ]]; then
             PAYLOAD_DIR="release-payload/${VERSION}"
-            mapfile -t BIN_PARTS < <(find "$PAYLOAD_DIR" -maxdepth 1 -type f -name 'part-*.bin' -printf '%p\n' 2>/dev/null | sort -V)
-            mapfile -t B64_PARTS < <(find "$PAYLOAD_DIR" -maxdepth 1 -type f -name 'part-*.b64' -printf '%p\n' 2>/dev/null | sort -V)
+            if find "$PAYLOAD_DIR" -maxdepth 1 -type f \( -name 'part-*.bin' -o -name 'part-*.b64' \) -print -quit 2>/dev/null | grep -q .; then
+              echo "Reconstructing $ZIP from its release payload..."
+              reconstruct_payload "$VERSION" "$ZIP"
+            elif [[ -n "$PATCH_FILE" && -f "$PATCH_FILE" ]]; then
+              BASE_VERSION="$(sed -n 's/^# base:[[:space:]]*//p' "$PATCH_FILE" | head -1)"
+              if [[ -z "$BASE_VERSION" ]]; then
+                echo "Patch $PATCH_FILE is missing a '# base: x.y.z' header." >&2
+                exit 1
+              fi
 
-            if (( ${#BIN_PARTS[@]} > 0 )); then
-              echo "Reconstructing $ZIP from ${#BIN_PARTS[@]} binary payload parts..."
-              cat "${BIN_PARTS[@]}" > "$ZIP"
-            elif (( ${#B64_PARTS[@]} > 0 )); then
-              echo "Reconstructing $ZIP from ${#B64_PARTS[@]} base64 payload parts..."
-              cat "${B64_PARTS[@]}" | base64 --decode > "$ZIP"
+              echo "Building $ZIP by patching Product Finder $BASE_VERSION..."
+              BASE_ZIP="base-${BASE_VERSION}.zip"
+              reconstruct_payload "$BASE_VERSION" "$BASE_ZIP"
+
+              TMP="$(mktemp -d)"
+              unzip -q "$BASE_ZIP" -d "$TMP"
+              ( cd "$TMP" && patch -p1 < "$GITHUB_WORKSPACE/$PATCH_FILE" )
+              ( cd "$TMP" && zip -qr "$GITHUB_WORKSPACE/$ZIP" all-star-product-finder )
+              rm -rf "$TMP" "$BASE_ZIP"
             else
-              echo "Neither $ZIP nor a payload for version $VERSION exists." >&2
+              echo "Neither $ZIP, a payload, nor a release patch for version $VERSION exists." >&2
               exit 1
             fi
           fi
