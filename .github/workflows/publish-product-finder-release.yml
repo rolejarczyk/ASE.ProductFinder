@@ -8,6 +8,8 @@ on:
         required: true
         type: string
   push:
+    branches:
+      - main
     paths:
       - 'all-star-product-finder-*.zip'
       - 'release-payload/**'
